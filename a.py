@@ -2,39 +2,37 @@ import io
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 from scipy.spatial import cKDTree
-import folium
-from streamlit_folium import st_folium
 
-st.set_page_config(page_title="Meterless Transformers", layout="wide")
+st.set_page_config(page_title="Meterless Transformers (Fast)", layout="wide")
 
-st.title("تحليل المحوّلات التي لا تقع ضمن نطاق أي عدّاد")
+st.title("تحليل المحوّلات التي لا تقع ضمن نطاق أي عدّاد — نسخة سريعة")
 
 st.markdown(
 """
-**وصف مختصر:**  
-يراجع هذا النظام مواقع المحوّلات والعدّادات ويحدّد المحوّلات التي لا يوجد ضمن نطاقها أي عدّاد (حسب مسافة تختارها).  
-**المدخلات:** ملف العدّادات + ملف المحوّلات (CSV/Excel).  
-**المخرجات:** ملف Excel يتضمن المحوّلات بدون عدّادات قريبة + خريطة تفاعلية.
+**الفكرة:** نراجع مواقع المحوّلات والعدّادات ونحدّد المحوّلات التي لا يوجد ضمن نطاقها أي عدّاد (حسب مسافة تختارها).  
+**المدخلات:** ملف العدّادات + ملف المحوّلات (CSV أو Excel).  
+**المخرجات:** **ملف Excel** بالمحوّلات التي **لا** يغطّيها أي عدّاد + ملخص إحصائي سريع.
 """
 )
 
-# -------- إعدادات عامّة --------
+# =========== إعدادات ===========
 dist_m = st.number_input("المسافة العتبية (متر)", min_value=1, value=100, step=10)
 
 with st.expander("خيارات متقدمة", expanded=False):
-    st.caption("عدد أقرب العدّادات التي نفحصها (للدقّة): يُستخدم في البحث التقريبي قبل حساب المسافة الدقيقة. اتركه كما هو في أغلب الحالات.")
-    max_k = st.slider("عدد أقرب العدّادات التي نفحصها (للدقّة)", 1, 50, 10)
+    st.caption("عدد أقرب العدّادات التي نفحصها (بحث تقريبي قبل المسافة الدقيقة). اتركه كما هو غالبًا.")
+    max_k = st.slider("عدد أقرب العدّادات للفحص (k)", 1, 50, 10)
 
-# -------- أدوات قراءة الملفات --------
+# =========== قراءة الملفات ===========
 def read_any(file):
     if file is None:
         return None
     name = file.name.lower()
     if name.endswith(".csv"):
-        return pd.read_csv(file)
-    else:
-        return pd.read_excel(file)
+        # قراءة أسرع، خصوصاً للملفات الكبيرة
+        return pd.read_csv(file, engine="python")
+    return pd.read_excel(file)
 
 st.subheader("رفع الملفات")
 c1, c2 = st.columns(2)
@@ -43,7 +41,7 @@ with c1:
 with c2:
     transf_file = st.file_uploader("ملف المحوّلات (CSV/Excel)", type=["csv","xlsx","xls"])
 
-# -------- اقتراح/التقاط تلقائي لأسماء الأعمدة --------
+# =========== اكتشاف أسماء الأعمدة تلقائياً ===========
 def suggest_col(df, candidates):
     if df is None: 
         return None
@@ -54,19 +52,19 @@ def suggest_col(df, candidates):
     return None
 
 def detect_mapping(meters_df, transf_df):
-    # العدادات
+    # العدّادات
     m_lon = suggest_col(meters_df, ["lon","x","longitude"])
     m_lat = suggest_col(meters_df, ["lat","y","latitude"])
     m_id  = suggest_col(meters_df, ["meter_id","meterid","id","رقم_العداد","رقم العداد"])
 
-    # المحولات
+    # المحوّلات
     t_lon = suggest_col(transf_df, ["Lon","lon","x","longitude"])
     t_lat = suggest_col(transf_df, ["Lat","lat","y","latitude"])
     t_id  = suggest_col(transf_df, ["transformer_id","transformerid","tx_id","txid","id","رقم_المحول","رقم المحول"])
 
     return (m_lon, m_lat, m_id), (t_lon, t_lat, t_id)
 
-# -------- المسافة (Haversine) --------
+# =========== المسافة ===========
 R = 6371000.0  # متر
 
 def haversine_batch(lon1, lat1, lon2, lat2):
@@ -84,9 +82,8 @@ def sph2cart(lat, lon):
     clat = np.cos(lat)
     return np.column_stack((clat*np.cos(lon), clat*np.sin(lon), np.sin(lat)))
 
-# -------- المعالجة --------
+# =========== المعالجة ===========
 def process(meters_df, m_lon, m_lat, m_id, transf_df, t_lon, t_lat, t_id, max_meters, dist_threshold):
-    # الإسقاط والتسمية
     keep_m = [c for c in [m_lon, m_lat, m_id] if c is not None]
     keep_t = [c for c in [t_lon, t_lat, t_id] if c is not None]
 
@@ -101,7 +98,7 @@ def process(meters_df, m_lon, m_lat, m_id, transf_df, t_lon, t_lat, t_id, max_me
     if t_id: rename_t[t_id] = "transformer_id"
     transf.rename(columns=rename_t, inplace=True)
 
-    # إنشاء KDTree تقريبي
+    # KDTree تقريبي على كرة الوحدة
     meters_rad = np.deg2rad(meters[["lat","lon"]].to_numpy())
     transf_rad = np.deg2rad(transf[["Lat","Lon"]].to_numpy())
     meters_xyz = sph2cart(meters_rad[:,0], meters_rad[:,1])
@@ -116,11 +113,15 @@ def process(meters_df, m_lon, m_lat, m_id, transf_df, t_lon, t_lat, t_id, max_me
     nearest_dist = np.full(len(transf), np.inf)
     nearest_meter = np.full(len(transf), np.nan, dtype=object)
 
+    # حساب المسافات الدقيقة لأقرب k عدّادات
+    m_lon_arr = meters["lon"].to_numpy()
+    m_lat_arr = meters["lat"].to_numpy()
+
     for i, cand in enumerate(idxs):
         cand = np.atleast_1d(cand)
         dd = haversine_batch(
             transf["Lon"].iloc[i], transf["Lat"].iloc[i],
-            meters["lon"].to_numpy()[cand], meters["lat"].to_numpy()[cand]
+            m_lon_arr[cand],          m_lat_arr[cand]
         )
         if dd.size:
             j = dd.argmin()
@@ -136,28 +137,26 @@ def process(meters_df, m_lon, m_lat, m_id, transf_df, t_lon, t_lat, t_id, max_me
     missing = transf[ transf["nearest_meter_dist_m"] > dist_threshold ].copy()
     return transf, missing
 
-# -------- التشغيل --------
+# =========== تشغيل ===========
 if meters_file and transf_file:
     meters_df = read_any(meters_file)
     transf_df  = read_any(transf_file)
 
     (m_lon, m_lat, m_id), (t_lon, t_lat, t_id) = detect_mapping(meters_df, transf_df)
-
-    # إذا فشل الالتقاط التلقائي نظهر للمستخدم تعيين الأعمدة
     need_manual = any(x is None for x in [m_lon, m_lat, t_lon, t_lat])
 
     if need_manual:
-        st.warning("لم أستطع التعرّف تلقائيًا على بعض الأعمدة. الرجاء اختيارها يدويًا.")
+        st.warning("تعذّر التقاط بعض الأعمدة تلقائيًا — اخترها يدويًا.")
         cc1, cc2 = st.columns(2)
         with cc1:
-            m_lon = st.selectbox("عمود خط الطول للعداد (lon/x)", options=meters_df.columns, index=0 if m_lon is None else meters_df.columns.get_loc(m_lon))
-            m_lat = st.selectbox("عمود خط العرض للعداد (lat/y)", options=meters_df.columns, index=0 if m_lat is None else meters_df.columns.get_loc(m_lat))
-            m_id  = st.selectbox("معرّف العدّاد (اختياري)", options=["<لا يوجد>"]+list(meters_df.columns), index=0)
+            m_lon = st.selectbox("عمود خط الطول للعداد (lon/x)", options=meters_df.columns)
+            m_lat = st.selectbox("عمود خط العرض للعداد (lat/y)", options=meters_df.columns)
+            m_id  = st.selectbox("معرّف العدّاد (اختياري)", options=["<لا يوجد>"]+list(meters_df.columns))
             m_id  = None if m_id == "<لا يوجد>" else m_id
         with cc2:
-            t_lon = st.selectbox("عمود خط الطول للمحوّل (Lon/x)", options=transf_df.columns, index=0 if t_lon is None else transf_df.columns.get_loc(t_lon))
-            t_lat = st.selectbox("عمود خط العرض للمحوّل (Lat/y)", options=transf_df.columns, index=0 if t_lat is None else transf_df.columns.get_loc(t_lat))
-            t_id  = st.selectbox("معرّف المحوّل (اختياري)", options=["<لا يوجد>"]+list(transf_df.columns), index=0)
+            t_lon = st.selectbox("عمود خط الطول للمحوّل (Lon/x)", options=transf_df.columns)
+            t_lat = st.selectbox("عمود خط العرض للمحوّل (Lat/y)", options=transf_df.columns)
+            t_id  = st.selectbox("معرّف المحوّل (اختياري)", options=["<لا يوجد>"]+list(transf_df.columns))
             t_id  = None if t_id == "<لا يوجد>" else t_id
     else:
         st.success("تم التقاط الأعمدة تلقائيًا من الملفات.")
@@ -170,72 +169,63 @@ if meters_file and transf_file:
                 max_k, dist_m
             )
 
-            st.success(f"تم الانتهاء. عدد المحوّلات: {len(result_all)} — بدون عدّادات قريبة: {len(result_missing)}")
+            # ====== ملخص إحصائي سريع ======
+            total_tx = len(result_all)
+            missing_tx = len(result_missing)
+            covered_tx = total_tx - missing_tx
+            coverage = (covered_tx / total_tx * 100.0) if total_tx else 0.0
+            median_dist = float(np.nanmedian(result_all["nearest_meter_dist_m"])) if total_tx else 0.0
+            mean_dist   = float(np.nanmean(result_all["nearest_meter_dist_m"]))   if total_tx else 0.0
 
-            # ترتيب الأعمدة للإخراج
-            preferred_order = ["transformer_id","Lat","Lon","nearest_meter_dist_m","nearest_meter_id"]
-            cols_all = [c for c in preferred_order if c in result_all.columns] + [c for c in result_all.columns if c not in preferred_order]
-            cols_mis = [c for c in preferred_order if c in result_missing.columns] + [c for c in result_missing.columns if c not in preferred_order]
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("عدد المحوّلات", f"{total_tx:,}")
+            k2.metric("مغطّاة بعدّادات", f"{covered_tx:,}", f"{coverage:.1f}%")
+            k3.metric("غير مغطّاة", f"{missing_tx:,}")
+            k4.metric("وسيط المسافة (م)", f"{median_dist:,.1f}", f"متوسط {mean_dist:,.1f}")
 
-            st.subheader("المحوّلات بدون عدّادات قريبة (أكبر من العتبة)")
-            st.dataframe(result_missing[cols_mis].head(500))
+            # مخطط توزيع المسافات
+            st.subheader("توزيع أقرب مسافة لعداد (متر)")
+            chart_data = result_all[["nearest_meter_dist_m"]].copy()
+            chart_data["nearest_meter_dist_m"] = chart_data["nearest_meter_dist_m"].clip(upper=dist_m*4)
+            hist = alt.Chart(chart_data).mark_bar().encode(
+                alt.X("nearest_meter_dist_m:Q", bin=alt.Bin(maxbins=40), title="المسافة (م)"),
+                alt.Y("count()", title="العدد"),
+                tooltip=[alt.Tooltip("count()", title="العدد")]
+            ).properties(height=280)
+            st.altair_chart(hist, use_container_width=True)
 
-            st.subheader("المحوّلات (مع مسافة أقرب عدّاد)")
-            st.dataframe(result_all[cols_all].head(500))
+            # قائمة بأبعد 20 محوّل (اختياري)
+            st.subheader("أبعد 20 محوّل عن أقرب عدّاد")
+            preferred = ["transformer_id","Lat","Lon","nearest_meter_dist_m","nearest_meter_id"]
+            cols_all = [c for c in preferred if c in result_all.columns] + [c for c in result_all.columns if c not in preferred]
+            st.dataframe(result_all.sort_values("nearest_meter_dist_m", ascending=False).head(20)[cols_all])
 
-            # تنزيل النتائج
+            # ====== تنزيل النتائج (المفقودة فقط) ======
+            st.subheader("تنزيل")
+            cols_mis = [c for c in preferred if c in result_missing.columns] + [c for c in result_missing.columns if c not in preferred]
+
+            # Excel
             out_buf = io.BytesIO()
             with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
-                result_all[cols_all].to_excel(writer, sheet_name="All_Transformers", index=False)
                 result_missing[cols_mis].to_excel(writer, sheet_name="Missing_Transformers", index=False)
             out_buf.seek(0)
             st.download_button(
-                "تنزيل النتائج (Excel)",
+                "تنزيل المحوّلات غير المغطّاة (Excel)",
                 data=out_buf,
-                file_name="transformers_analysis.xlsx",
+                file_name="missing_transformers.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-            # -------- خريطة كبيرة + مشاركة --------
-            st.subheader("الخريطة")
-            if len(result_all) > 0:
-                # حساب حدود لاحتواء جميع النقاط
-                lat_all = result_all["Lat"].to_numpy()
-                lon_all = result_all["Lon"].to_numpy()
-                lat_min, lat_max = float(lat_all.min()), float(lat_all.max())
-                lon_min, lon_max = float(lon_all.min()), float(lon_all.max())
-                center = [ (lat_min+lat_max)/2.0, (lon_min+lon_max)/2.0 ]
+            # CSV (أخف وأسرع)
+            csv_buf = result_missing[cols_mis].to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "تنزيل المحوّلات غير المغطّاة (CSV)",
+                data=csv_buf,
+                file_name="missing_transformers.csv",
+                mime="text/csv"
+            )
 
-                fmap = folium.Map(location=center, zoom_start=13, tiles="OpenStreetMap", control_scale=True, prefer_canvas=True)
-
-                # كل المحوّلات (رمادي)
-                for _, r in result_all.iterrows():
-                    folium.CircleMarker(
-                        [r["Lat"], r["Lon"]],
-                        radius=3, color="#999", fill=True, fill_opacity=0.5
-                    ).add_to(fmap)
-
-                # المحوّلات بدون عدّادات — نقاط حمراء + رابط مشاركة
-                for _, r in result_missing.iterrows():
-                    tx_id = r.get("transformer_id", "")
-                    gmaps = f"https://www.google.com/maps?q={r['Lat']},{r['Lon']}"
-                    popup_html = f"""
-                    <b>Transformer:</b> {tx_id if pd.notna(tx_id) else '-'}<br>
-                    <b>Distance to nearest meter:</b> {r.get('nearest_meter_dist_m', np.nan):.1f} m<br>
-                    <a href="{gmaps}" target="_blank">فتح/مشاركة في Google Maps</a>
-                    """
-                    folium.CircleMarker(
-                        [r["Lat"], r["Lon"]],
-                        radius=7, color="#c23b22", fill=True, fill_opacity=0.9,
-                        popup=folium.Popup(popup_html, max_width=300)
-                    ).add_to(fmap)
-
-                # ملاءمة الحدود
-                fmap.fit_bounds([[lat_min, lon_min],[lat_max, lon_max]])
-
-                st_folium(fmap, height=660, width=None)  # تملأ العرض تلقائيًا
-            else:
-                st.info("لا توجد بيانات لرسم خريطة.")
+            st.success("تم الإنهاء بنجاح.")
         except Exception as e:
             st.error(f"حدث خطأ أثناء التحليل: {e}")
 else:
