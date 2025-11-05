@@ -7,7 +7,7 @@ from scipy.spatial import cKDTree
 
 st.set_page_config(page_title="Meterless Transformers (Fast)", layout="wide")
 
-st.title("تحليل المحوّلات التي لا تقع ضمن نطاق أي عدّاد — نسخة سريعة")
+st.title("تحليل المحوّلات التي لا تقع ضمن نطاق أي عدّاد  ")
 
 st.markdown(
 """
@@ -230,3 +230,4 @@ if meters_file and transf_file:
             st.error(f"حدث خطأ أثناء التحليل: {e}")
 else:
     st.info("الرجاء رفع ملف العدّادات وملف المحوّلات للمتابعة.")
+
